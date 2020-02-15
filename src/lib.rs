@@ -198,9 +198,7 @@ mod tests {
     async fn test_oneshot() {
         let mut async_inotify = AsyncInotify::init().unwrap();
 
-        let tmp_dir = tempfile::tempdir_in(temp_dir()).unwrap();
-
-        let tmp_file = NamedTempFile::new_in(&tmp_dir).unwrap();
+        let tmp_file = NamedTempFile::new().unwrap();
 
         let watch_descriptor = async_inotify.add_watch(&tmp_file, WatchMask::CLOSE).await.unwrap();
 
@@ -219,9 +217,7 @@ mod tests {
     async fn test_multi() {
         let mut async_inotify = AsyncInotify::init().unwrap();
 
-        let tmp_dir = tempfile::tempdir_in(temp_dir()).unwrap();
-
-        let mut tmp_file = NamedTempFile::new_in(&tmp_dir).unwrap();
+        let mut tmp_file = NamedTempFile::new().unwrap();
 
         let watch_descriptor = async_inotify.add_watch(&tmp_file, WatchMask::MODIFY | WatchMask::ACCESS).await.unwrap();
 
