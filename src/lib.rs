@@ -180,6 +180,7 @@ impl Stream for AsyncInotify {
 
 #[cfg(test)]
 mod tests {
+    use std::env::temp_dir;
     use std::io::prelude::*;
 
     use futures::io::SeekFrom;
@@ -193,7 +194,9 @@ mod tests {
     async fn test_oneshot() {
         let mut async_inotify = AsyncInotify::init().unwrap();
 
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_dir = tempfile::tempdir_in(temp_dir()).unwrap();
+
+        let tmp_file = NamedTempFile::new_in(&tmp_dir).unwrap();
 
         let watch_descriptor = async_inotify.add_watch(&tmp_file, WatchMask::CLOSE).await.unwrap();
 
@@ -212,7 +215,9 @@ mod tests {
     async fn test_multi() {
         let mut async_inotify = AsyncInotify::init().unwrap();
 
-        let mut tmp_file = NamedTempFile::new().unwrap();
+        let tmp_dir = tempfile::tempdir_in(temp_dir()).unwrap();
+
+        let mut tmp_file = NamedTempFile::new_in(&tmp_dir).unwrap();
 
         let watch_descriptor = async_inotify.add_watch(&tmp_file, WatchMask::MODIFY | WatchMask::ACCESS).await.unwrap();
 
@@ -241,5 +246,22 @@ mod tests {
         assert_eq!(access_event.name, None); // because watch file directly
 
         assert_eq!(access_event.wd, watch_descriptor);
+    }
+
+    #[tokio::test]
+    async fn test_dir() {
+        let mut async_inotify = AsyncInotify::init().unwrap();
+
+        let tmp_dir = tempfile::tempdir_in(temp_dir()).unwrap();
+
+        let watch_descriptor = async_inotify.add_watch(&tmp_dir, WatchMask::CREATE).await.unwrap();
+
+        let tmp_file = NamedTempFile::new_in(&tmp_dir).unwrap();
+
+        let event = async_inotify.next().await.unwrap().unwrap();
+
+        assert_eq!(event.wd, watch_descriptor);
+        assert_eq!(event.mask, EventMask::CREATE);
+        assert_eq!(event.name, Some(tmp_file.path().file_name().unwrap().to_os_string()));
     }
 }
