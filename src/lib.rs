@@ -70,7 +70,7 @@ impl AsyncInotify {
             let mut events = MioEvents::with_capacity(1024);
 
             loop {
-                let waker = match receiver.recv() {
+                let mut waker = match receiver.recv() {
                     Err(_) => break, // sender is dropped, means AsyncInotify is useless, can stop reactor thread.
                     Ok(waker) => waker
                 };
@@ -85,6 +85,10 @@ impl AsyncInotify {
                     let _ = mio_poll.registry().deregister(&mut SourceFd(&fd));
 
                     return;
+                }
+
+                while let Ok(new_waker) = receiver.try_recv() {
+                    waker = new_waker;
                 }
 
                 waker.wake();
