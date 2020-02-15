@@ -148,14 +148,14 @@ impl Stream for AsyncInotify {
 
             Ok(mut events) => {
                 if let Some(first_event) = events.next() {
-                    for event in events {
-                        guard.cached_events.push_back(Event {
+                    guard.cached_events.extend(events.map(|event| {
+                        Event {
                             wd: event.wd,
                             mask: event.mask,
                             cookie: event.cookie,
                             name: event.name.map(OsStr::to_os_string),
-                        });
-                    }
+                        }
+                    }));
 
                     Poll::Ready(Some(Ok(Event {
                         wd: first_event.wd,
