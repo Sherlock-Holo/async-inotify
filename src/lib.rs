@@ -1,18 +1,20 @@
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::future::Future;
 use std::io;
 use std::io::ErrorKind;
+use std::ops::Deref;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::mpsc;
+use std::rc::Rc;
+use std::sync::{Arc, mpsc};
 use std::sync::mpsc::Sender;
+use std::sync::Mutex as StdMutex;
 use std::task::{Context, Poll, Waker};
 use std::thread;
-use std::vec::IntoIter;
 
-use futures::stream;
-use futures::stream::Iter;
 use futures::stream::Stream;
 pub use inotify::{Event, EventMask, WatchDescriptor, WatchMask};
 use inotify::Inotify;
@@ -24,15 +26,11 @@ use tokio::pin;
 use tokio::sync::Mutex;
 
 struct InnerInotify {
-    inotify: Option<Inotify>,
-    cached_events: Option<Iter<IntoIter<Event<OsString>>>>,
+    inotify: Inotify,
+    cached_events: VecDeque<Event<OsString>>,
+    buf: Rc<RefCell<Vec<u8>>>,
     sender: Sender<Waker>,
-}
-
-impl Drop for InnerInotify {
-    fn drop(&mut self) {
-        let _ = self.inotify.take().unwrap().close();
-    }
+    poll_error: Arc<StdMutex<Option<io::Error>>>,
 }
 
 /// Wraps an Inotify object and provides asynchronous methods based on the inner object.
@@ -56,7 +54,17 @@ impl AsyncInotify {
 
         let mut mio_poll = MioPoll::new()?;
 
-        let (sender, receiver) = mpsc::channel::<Waker>();
+        let (sender, receiver) = mpsc::channel();
+
+        let inner_inotify = InnerInotify {
+            inotify,
+            cached_events: VecDeque::new(),
+            buf: Rc::new(RefCell::new(vec![0; 1024])),
+            sender,
+            poll_error: Arc::new(StdMutex::new(None)),
+        };
+
+        let poll_error = Arc::clone(&inner_inotify.poll_error);
 
         let _executor_job = thread::spawn(move || {
             let mut events = MioEvents::with_capacity(1024);
@@ -72,20 +80,18 @@ impl AsyncInotify {
                         continue;
                     }
 
-                    panic!(err); // TODO should I handle it?
+                    poll_error.lock().unwrap().replace(err);
+
+                    let _ = mio_poll.registry().deregister(&mut SourceFd(&fd));
+
+                    return;
                 }
 
                 waker.wake();
             };
 
-            mio_poll.registry().deregister(&mut SourceFd(&fd))
+            let _ = mio_poll.registry().deregister(&mut SourceFd(&fd));
         });
-
-        let inner_inotify = InnerInotify {
-            inotify: Some(inotify),
-            cached_events: None,
-            sender,
-        };
 
         Ok(AsyncInotify(Mutex::new(inner_inotify)))
     }
@@ -93,23 +99,13 @@ impl AsyncInotify {
     /// Monitor `path` for the events in `mask`. For a list of events, see
     /// https://docs.rs/tokio-inotify/0.2.1/tokio_inotify/struct.AsyncINotify.html (items prefixed with
     /// "Event")
-    #[inline]
     pub async fn add_watch<P: AsRef<Path>>(&self, path: P, mask: WatchMask) -> io::Result<WatchDescriptor> {
-        if let Some(inotify) = &mut self.0.lock().await.inotify {
-            inotify.add_watch(path, mask)
-        } else {
-            unreachable!()
-        }
+        self.0.lock().await.inotify.add_watch(path, mask)
     }
 
     /// Remove an element currently watched.
-    #[inline]
     pub async fn rm_watch(&self, wd: WatchDescriptor) -> io::Result<()> {
-        if let Some(inotify) = &mut self.0.lock().await.inotify {
-            inotify.rm_watch(wd)
-        } else {
-            unreachable!()
-        }
+        self.0.lock().await.inotify.rm_watch(wd)
     }
 }
 
@@ -126,50 +122,58 @@ impl Stream for AsyncInotify {
             Poll::Ready(guard) => guard
         };
 
-        if let Some(events) = &mut guard.cached_events {
-            pin!(events);
-
-            match events.poll_next(cx) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Some(event)) => return Poll::Ready(Some(Ok(event))),
-
-                Poll::Ready(None) => guard.cached_events.take(),
-            };
+        // check if poll thread fail
+        {
+            let mut poll_error_guard = guard.poll_error.lock().unwrap();
+            if poll_error_guard.is_some() {
+                let poll_error = poll_error_guard.take().unwrap();
+                return Poll::Ready(Some(Err(poll_error)));
+            }
         }
 
-        if let Some(inotify) = &mut guard.inotify {
-            let mut buf = vec![0; 1024];
+        if let Some(first_event) = guard.cached_events.pop_front() {
+            return Poll::Ready(Some(Ok(first_event)));
+        }
 
-            match inotify.read_events(&mut buf) {
-                Err(err) => Poll::Ready(Some(Err(err))),
+        let buf = Rc::clone(&guard.buf);
 
-                Ok(mut events) => {
-                    if let Some(event) = events.next() {
-                        let events: Vec<_> = events.map(|event| {
-                            Event {
-                                wd: event.wd,
-                                mask: event.mask,
-                                cookie: event.cookie,
-                                name: event.name.map(OsStr::to_os_string),
-                            }
-                        }).collect();
+        let mut buf_mut = buf.deref().borrow_mut();
 
-                        guard.cached_events.replace(stream::iter(events));
+        match guard.inotify.read_events(&mut buf_mut) {
+            Err(err) => Poll::Ready(Some(Err(err))),
 
-                        Poll::Ready(Some(Ok(Event {
+            Ok(mut events) => {
+                if let Some(first_event) = events.next() {
+                    for event in events {
+                        guard.cached_events.push_back(Event {
                             wd: event.wd,
                             mask: event.mask,
                             cookie: event.cookie,
                             name: event.name.map(OsStr::to_os_string),
-                        })))
-                    } else {
-                        guard.sender.send(cx.waker().clone()).unwrap();
-                        Poll::Pending
+                        });
                     }
+
+                    Poll::Ready(Some(Ok(Event {
+                        wd: first_event.wd,
+                        mask: first_event.mask,
+                        cookie: first_event.cookie,
+                        name: first_event.name.map(OsStr::to_os_string),
+                    })))
+                } else if guard.sender.send(cx.waker().clone()).is_err() {
+                    let mut poll_error_guard = guard.poll_error.lock().unwrap();
+
+                    // check if poll thread fail
+                    if poll_error_guard.is_some() {
+                        let poll_error = poll_error_guard.take().unwrap();
+
+                        Poll::Ready(Some(Err(poll_error)))
+                    } else {
+                        Poll::Ready(Some(Err(io::Error::from(ErrorKind::BrokenPipe))))
+                    }
+                } else {
+                    Poll::Pending
                 }
             }
-        } else {
-            unreachable!()
         }
     }
 }
@@ -191,9 +195,7 @@ mod tests {
 
         let tmp_file = NamedTempFile::new().unwrap();
 
-        let path = tmp_file.path().to_path_buf();
-
-        let watch_descriptor = async_inotify.add_watch(&path, WatchMask::CLOSE).await.unwrap();
+        let watch_descriptor = async_inotify.add_watch(&tmp_file, WatchMask::CLOSE).await.unwrap();
 
         tmp_file.close().unwrap();
 
@@ -212,9 +214,7 @@ mod tests {
 
         let mut tmp_file = NamedTempFile::new().unwrap();
 
-        let path = tmp_file.path().to_path_buf();
-
-        let watch_descriptor = async_inotify.add_watch(&path, WatchMask::MODIFY | WatchMask::ACCESS).await.unwrap();
+        let watch_descriptor = async_inotify.add_watch(&tmp_file, WatchMask::MODIFY | WatchMask::ACCESS).await.unwrap();
 
         writeln!(tmp_file, "test").unwrap();
 
