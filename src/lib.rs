@@ -15,15 +15,26 @@ use std::sync::Mutex as StdMutex;
 use std::task::{Context, Poll, Waker};
 use std::thread;
 
-use futures::stream::Stream;
 pub use inotify::{Event, EventMask, WatchDescriptor, WatchMask};
 use inotify::Inotify;
 use mio::{Poll as MioPoll, Token};
 use mio::Events as MioEvents;
 use mio::Interest;
 use mio::unix::SourceFd;
-use tokio::pin;
-use tokio::sync::Mutex;
+
+use cfg_if::cfg_if;
+
+cfg_if! {
+    if #[cfg(feature = "tokio-runtime")] {
+        use tokio::pin;
+        use tokio::stream::Stream;
+        use tokio::sync::Mutex;
+    } else if #[cfg(all(not(feature = "tokio-runtime"), feature = "async-std-runtime"))] {
+        use async_std::stream::Stream;
+        use async_std::sync::Mutex;
+        use futures_util::pin_mut as pin;
+    }
+}
 
 struct InnerInotify {
     inotify: Inotify,
@@ -186,15 +197,24 @@ impl Stream for AsyncInotify {
 mod tests {
     use std::env::temp_dir;
     use std::io::prelude::*;
+    use std::io::SeekFrom;
 
-    use futures::io::SeekFrom;
-    use futures::StreamExt;
     use inotify::EventMask;
     use tempfile::NamedTempFile;
 
     use super::*;
 
-    #[tokio::test]
+    cfg_if! {
+        if #[cfg(feature = "tokio-runtime")] {
+            use tokio::stream::StreamExt;
+            use tokio::test as runtime_test;
+        } else if #[cfg(all(not(feature = "tokio-runtime"), feature = "async-std-runtime"))] {
+            use async_std::stream::StreamExt;
+            use async_std::test as runtime_test;
+        }
+    }
+
+    #[runtime_test]
     async fn test_oneshot() {
         let mut async_inotify = AsyncInotify::init().unwrap();
 
@@ -213,7 +233,7 @@ mod tests {
         assert_eq!(access_event.wd, watch_descriptor);
     }
 
-    #[tokio::test]
+    #[runtime_test]
     async fn test_multi() {
         let mut async_inotify = AsyncInotify::init().unwrap();
 
@@ -248,7 +268,7 @@ mod tests {
         assert_eq!(access_event.wd, watch_descriptor);
     }
 
-    #[tokio::test]
+    #[runtime_test]
     async fn test_dir() {
         let mut async_inotify = AsyncInotify::init().unwrap();
 

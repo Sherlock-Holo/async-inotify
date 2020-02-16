@@ -1,4 +1,4 @@
-# tokio-inotify
+# async-inotify
 
 **NOTE: The `inotify` crate now offers a `Stream`-based API. It is recommended to use it directly.**
 
@@ -6,10 +6,12 @@
 
 [Documentation](https://docs.rs/tokio-inotify/)
 
-The `tokio_inotify` crate enables the use of inotify file descriptors in the `tokio` framework.
+The `async_inotify` crate enables the use of inotify file descriptors in the `tokio` or `async-std` framework.
 It builds on the [`inotify`](https://github.com/hannobraun/inotify-rs) crate by wrapping
-the `INotify` type into a new type called `AsyncINotify`, and implementing
-[`futures::stream::Stream`](http://alexcrichton.com/futures-rs/futures/stream/trait.Stream.html).
+the `Inotify` type into a new type called `AsyncInotify`, and implementing `Stream`.
 
-This means that you can consume `inotify::Event`s from the `AsyncINotify` object and act on them.
+This means that you can consume `inotify::Event`s from the `AsyncInotify` object and act on them.
 
+## License
+
+MIT

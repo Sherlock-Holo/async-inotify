@@ -1,20 +1,30 @@
 [package]
-name = "tokio-inotify"
+name = "async-inotify"
 version = "0.5.0"
 authors = ["Sherlock Holo <sherlockya@gmail.com>", "Lewin Bormann <lewin@lewin-bormann.info>"]
 license = "MIT"
-keywords = ["inotify", "tokio", "async", "filesystem"]
+keywords = ["inotify", "tokio", "async-std", "async", "filesystem"]
 description = "Stream-based access to filesystem events."
-repository = "https://github.com/Sherlock-Holo/tokio-inotify"
+repository = "https://github.com/Sherlock-Holo/async-inotify"
 #documentation = "https://docs.rs/tokio-inotify"
 edition = "2018"
 
+[features]
+tokio-runtime = ["tokio"]
+async-std-runtime = ["async-std", "futures-util"]
+
 [dependencies]
-futures = "0.3"
-inotify = "0.8"
-tokio = { version = "0.2", features = ["sync", "macros"] }
+cfg-if = "0.1"
 mio = { version = "0.7.0-alpha.1", features = ["os-util", "os-poll"] }
+inotify = "0.8"
+
+# tokio-runtime denpendencies
+tokio = { version = "0.2", features = ["sync", "macros", "stream"], optional = true }
+
+# async-std-runtime denpendencies
+async-std = { version = "1.5", features = ["attributes"], optional = true }
+futures-util = { version = "0.3", default-features = false, optional = true }
 
 [dev-dependencies]
 tempfile = "3.1"
-tokio = { version = "0.2", features = ["rt-core", "sync", "macros", "fs"] }
+tokio = { version = "0.2", features = ["rt-core"] }
